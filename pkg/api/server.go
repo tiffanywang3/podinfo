@@ -6,6 +6,7 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"path"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -54,7 +55,9 @@ type Config struct {
 	UIPath                    string        `mapstructure:"ui-path"`
 	DataPath                  string        `mapstructure:"data-path"`
 	ConfigPath                string        `mapstructure:"config-path"`
+	CertPath                  string        `mapstructure:"cert-path"`
 	Port                      string        `mapstructure:"port"`
+	SecurePort                string        `mapstructure:"secure-port"`
 	PortMetrics               int           `mapstructure:"port-metrics"`
 	Hostname                  string        `mapstructure:"hostname"`
 	H2C                       bool          `mapstructure:"h2c"`
@@ -190,6 +193,9 @@ func (s *Server) ListenAndServe(stopCh <-chan struct{}) {
 		}
 	}()
 
+	// run the secure server in the background
+	go s.startSecureServer(handler)
+
 	// signal Kubernetes the server is ready to receive traffic
 	if !s.config.Unhealthy {
 		atomic.StoreInt32(&healthy, 1)
@@ -225,6 +231,24 @@ func (s *Server) ListenAndServe(stopCh <-chan struct{}) {
 		s.logger.Warn("HTTP server graceful shutdown failed", zap.Error(err))
 	} else {
 		s.logger.Info("HTTP server stopped")
+	}
+}
+
+func (s *Server) startSecureServer(handler http.Handler) {
+	if s.config.SecurePort != "0" {
+		srv := &http.Server{
+			Addr:         ":" + s.config.SecurePort,
+			WriteTimeout: s.config.HttpServerTimeout,
+			ReadTimeout:  s.config.HttpServerTimeout,
+			IdleTimeout:  2 * s.config.HttpServerTimeout,
+			Handler:      handler,
+		}
+
+		if err := srv.ListenAndServeTLS(
+			path.Join(s.config.CertPath, "tls.crt"),
+			path.Join(s.config.CertPath, "tls.key")); err != http.ErrServerClosed {
+			s.logger.Fatal("HTTPS server crashed", zap.Error(err))
+		}
 	}
 }
 
